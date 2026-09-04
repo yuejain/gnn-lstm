@@ -1,0 +1,122 @@
+# ============================================================
+# 传感器网络韧性评估与增强模型 - 全局配置
+# 基于程洋 GCN-NSGA-III 框架（录用论文 + 硕士论文）的算法革新
+# ============================================================
+
+# ---------- 园区物理参数（参考：南京江北新材料科技园、常州某园区） ----------
+park:
+  area_size: [2000, 2000]        # 园区尺寸 (m x m)
+  area_km2: 2.3                  # 案例园区面积（km²，常州某化工园区镜像）
+  num_hazard_sources: 50         # 重大危险源数量
+  num_sensors: [600, 900, 1200]   # 传感器节点数（默认第一档 600，可扩展性实验 900/1200）
+  sensor_types: [gas, temperature, pressure, liquid_level]
+  communication_range: 150       # 通信半径 (m)
+  hazard_cluster_radius: 200     # 危险源周围传感器聚集半径 (m)
+  min_safe_distance: 20          # 传感器最小安全距离 d_min (m)
+  occlusion_limit: 0.15          # 物理遮挡率上限 15%
+  installation_height: 0.5       # 默认安装高度 (m，氯气类重气贴地部署)
+  layout: road                   # 传感器布点：road（危险源聚集+道路锚点）| legacy
+  n_roads: 4                     # 道路网条数
+  occlusion_target: 0.15         # 目标遮挡率（论文三维约束 ≤15%）
+  atten_prob: 0.3                # 被遮挡边保留概率（反射/多径）
+  max_obstacles: 60              # 障碍物上限
+
+# ---------- 拓扑生成 ----------
+topology:
+  variants: [random, geo_scale_free, geo_small_world, grid, hierarchical, sbm, ring, tree]  # 8 种拓扑变体
+  num_graphs_per_variant: 300    # 每变体图数量（兼容旧用法；data_generation 网格优先）
+  variant_params:                # 各变体参数（vparams 字典）
+    random: {max_range_mult: 3.0}
+    geo_scale_free: {gamma: 2.0, k_min: 2, k_max: 40, p_long: 0.02}   # γ 由 email-Eu-core 标定参考
+    geo_small_world: {k: 8, p: 0.1, ring_mult: 1.5}
+    grid: {}
+    hierarchical: {n_zones: 6, inter_ratio: 0.02}
+    sbm: {n_blocks: 4, p_in: 0.15, p_out: 0.008}
+    ring: {n_backbone: 12, backbone_mult: 2.0}
+    tree: {extra_leaf_edge: true}
+  random_remove_ratio: [0.1, 0.2, 0.3, 0.4, 0.5]  # 随机失效比例扫描（10%-50%）
+  targeted_remove_ratio: 0.3     # 蓄意攻击移除比例
+  cascade_steps: 10              # 级联失效时间步数（GCN-LSTM 序列长度）
+
+# ---------- 数据工厂 ----------
+data_factory:
+  use_wsn_datasets: true         # 是否集成 4 个 WSN 数据集
+  wsn_data_dir: "../resilience_project/data/raw"   # WSN 原始数据目录
+  wsn_files:
+    wsn_basic: "WsnData (1).csv"
+    wsn_ds1: "WSN-DS.csv"
+    wsn_ds2: "WSN-DS2.csv"
+    wsn_latency: "WSN_Latency_Categorical_Dataset.csv"
+  node_feature_dim: 35           # 异构节点编码维度（32 维混合表征 + 3 维注意力特征增强）
+  z_score_window: 10             # 时序浓度 Z-score 窗口
+  seed: 42                       # 随机种子锁定
+
+# ---------- 数据生成参数网格（5000 图方案） ----------
+data_generation:
+  base: {n_nodes: 600, comm_range: 150, n_hazard: 50, cluster_r: 200, occlusion: 0.15}
+  base_per_variant: 150          # 每变体锚点档图数
+  sweeps:                        # OFAT 扫描（单因素逐一变化）
+    n_nodes:    {values: [300, 900, 1200], per_variant: [50, 50, 30]}
+    comm_range: {values: [120, 200], per_variant: 40}
+    n_hazard:   {values: [30, 80], per_variant: 30}
+    cluster_r:  {values: [100, 350], per_variant: 20}
+    occlusion:  {values: [0.0, 0.30], per_variant: 20}
+  extra_per_variant: {sbm: 250, hierarchical: 250, grid: 200, ring: 150, tree: 150}  # 生产真实变体加权
+
+# ---------- GCN 静态评估器（阶段二） ----------
+gcn_regressor:
+  hidden_dim: 256                # 超参扫描最优（hidden=256, epochs=1000, dropout=0.1 → R²=0.844）
+  num_layers: 3
+  dropout: 0.1
+  epochs: 1000
+  lr: 0.001
+  batch_size: 32
+  patience: 100                  # 早停 patience（1000 epochs 下适当放宽）
+  train_val_test: [0.7, 0.15, 0.15]
+
+# ---------- GCN-LSTM 级联预测器（阶段三） ----------
+gcn_lstm:
+  hidden_dim: 64
+  lstm_layers: 2
+  time_steps: 10                 # 输入时间步（论文 LSTM T=10）
+  dropout: 0.2
+  epochs: 300
+  lr: 0.001
+  batch_size: 16
+
+# ---------- NSGA-III 韧性增强器（阶段四） ----------
+nsga3:
+  population: 80                 # 种群规模（调大实验规模）
+  generations: 80                # 迭代代数（调大实验规模）
+  n_new_nodes: 8                 # 可新增节点数（决策变量：坐标）
+  n_redundant_links: 12          # 可新增冗余链路数（决策变量：二进制开关）
+  mutation_eta: 20
+  crossover_eta: 20
+  mutation_prob: 0.1             # 变异概率（异常回滚时调高至 0.3）
+  fallback_mutation_prob: 0.3
+  max_cores: 4
+  objectives: [maximize_resilience, minimize_cascade_risk, minimize_cost]
+
+# ---------- 案例验证（阶段五，常州某园区镜像） ----------
+case_study:
+  name: "changzhou_mirror"
+  num_candidates: 91             # 初始候选监测节点（论文 4.3 节）
+  importance_threshold: 0.7      # 重要性评分阈值 τ
+  num_selected: 30               # 高评分候选节点数
+  final_sensors: 13              # 最终传感器数（论文图 11）
+  wind_direction: "E"            # 主导风向（常州偏东风 10.8%）
+  wind_speed: 2.5                # 平均风速 (m/s)
+  temperature: 25                # 环境温度 (°C)
+  gas_type: "chlorine"           # 泄漏气体（氯气）
+  leak_rate: [0.1, 10.0]         # 泄漏强度范围 (kg/s)
+  turbulence: [0.05, 0.30]       # 湍流强度范围
+  baseline_rd: [18.5, 15.2]      # 传统 NSGA-III 基线响应时延 (s)（论文表 4-6）
+  ours_rd: [10.1, 8.5]           # 本框架响应时延 (s)
+  coverage_gain: 0.153           # 覆盖率提升 +15.3%
+  delay_reduction: 0.287         # 响应延迟缩短 -28.7%
+
+# ---------- 通用 ----------
+general:
+  device: "auto"                 # auto: 自动选择 cuda/cpu
+  log_dir: "logs"
+  seed: 42
